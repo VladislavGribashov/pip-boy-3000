@@ -74,6 +74,42 @@
     text-decoration:underline;
   }
   .no-contractor-note.hidden{ display:none; }
+  .view-as-row{ margin-bottom:10px; }
+  .view-as-row.hidden{ display:none; }
+  .view-as-row select{
+    width:100%;
+    padding:7px 9px;
+    font-size:11.5px;
+    font-family:inherit;
+    border:1px solid var(--border);
+    border-radius:5px;
+    color:var(--ink);
+    background:var(--panel);
+  }
+  .view-as-banner{
+    background:#EFE6F8;
+    border:1px solid #B79AD9;
+    color:#5A3B8C;
+    border-radius:6px;
+    padding:9px 10px;
+    font-size:12px;
+    margin-bottom:10px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+  }
+  .view-as-banner.hidden{ display:none; }
+  .view-as-banner button{
+    border:1px solid #5A3B8C;
+    background:none;
+    color:#5A3B8C;
+    border-radius:4px;
+    padding:4px 8px;
+    font-size:11px;
+    cursor:pointer;
+    white-space:nowrap;
+  }
   .no-contractor-note{
     background:#FBF0E6; border:1px solid #E2B27A; color:#8A5A26;
     border-radius:6px; padding:10px; font-size:12px; margin-bottom:10px; line-height:1.5;
@@ -913,6 +949,15 @@
     <div class="user-bar" id="userBar">
       <span><span class="u-email" id="userEmail"></span> · <span class="u-role" id="userRole"></span></span>
       <button id="signOutBtn">выйти</button>
+    </div>
+    <div class="view-as-row hidden" id="viewAsRow">
+      <select id="viewAsSelect">
+        <option value="">— Просмотр как… —</option>
+      </select>
+    </div>
+    <div class="view-as-banner hidden" id="viewAsBanner">
+      Вы смотрите глазами: <b id="viewAsLabel"></b>
+      <button id="viewAsExitBtn">Вернуться к себе</button>
     </div>
     <div class="no-contractor-note hidden" id="noContractorNote">
       Ваш аккаунт подтверждён, но администратор ещё не назначил вам подрядчика — пока доступен только просмотр. Сообщите администратору свою почту.
@@ -2556,6 +2601,72 @@ function roleLabel(profile){
   return profile.contractor ? profile.contractor : 'подрядчик не назначен';
 }
 
+// ---------- "Просмотр как…" — только для администратора, для отладки чужих прав ----------
+// Настоящая личность (id/email) не подменяется — только поля, влияющие на права
+// (contractor/is_admin/is_supervisor), чтобы действия администратора, если он что-то
+// нажмёт в этом режиме, всё равно были корректно подписаны его настоящим именем.
+let realProfile = null;
+
+async function loadAllProfilesForViewAs(){
+  if (!currentProfile || !currentProfile.is_admin) return;
+  const { data, error } = await sb.from('profiles').select('email, contractor, is_admin, is_supervisor');
+  if (error || !data) return;
+  const sel = document.getElementById('viewAsSelect');
+  sel.innerHTML = '<option value="">— Просмотр как… —</option>';
+  data
+    .filter(p => p.email !== currentProfile.email)
+    .sort((a,b) => a.email.localeCompare(b.email))
+    .forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.email;
+      opt.textContent = `${p.email} (${roleLabel(p)})`;
+      sel.appendChild(opt);
+    });
+  document.getElementById('viewAsRow').classList.remove('hidden');
+}
+
+function applyViewAsExit(){
+  document.getElementById('viewAsBanner').classList.add('hidden');
+  document.getElementById('drawModeBtn').style.display = currentProfile.is_admin ? '' : 'none';
+  selectedIds.clear();
+  selectedRoomId = null;
+  closeMenu();
+  renderUnmatched();
+  renderManualList();
+  renderAll();
+}
+
+document.getElementById('viewAsSelect').addEventListener('change', async (e) => {
+  const email = e.target.value;
+  e.target.value = '';
+  if (!email) return;
+  const { data, error } = await sb.from('profiles').select('*').eq('email', email).maybeSingle();
+  if (error || !data) return;
+  if (!realProfile) realProfile = currentProfile;
+  currentProfile = {
+    ...realProfile,
+    contractor: data.contractor,
+    is_admin: data.is_admin,
+    is_supervisor: data.is_supervisor,
+  };
+  document.getElementById('viewAsLabel').textContent = `${data.email} (${roleLabel(data)})`;
+  document.getElementById('viewAsBanner').classList.remove('hidden');
+  document.getElementById('drawModeBtn').style.display = currentProfile.is_admin ? '' : 'none';
+  selectedIds.clear();
+  selectedRoomId = null;
+  closeMenu();
+  renderUnmatched();
+  renderManualList();
+  renderAll();
+});
+
+document.getElementById('viewAsExitBtn').addEventListener('click', () => {
+  if (!realProfile) return;
+  currentProfile = realProfile;
+  realProfile = null;
+  applyViewAsExit();
+});
+
 async function fetchProfile(userId, attempt){
   const { data, error } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
   if (data) return data;
@@ -2578,6 +2689,7 @@ async function onSignedIn(session){
 
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('appRoot').classList.remove('hidden');
+  loadAllProfilesForViewAs();
 
   if (!window.__appBooted){
     window.__appBooted = true;

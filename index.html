@@ -377,6 +377,73 @@
   .search-suggestion-item .sid{ font-family:'IBM Plex Mono', monospace; font-weight:600; color:var(--ink); }
   .search-suggestion-item .sname{ color:var(--ink-soft); margin-left:6px; }
   .search-suggestion-item .sfloor{ float:right; color:var(--ink-soft); font-size:11px; }
+  .global-summary-btn{
+    position:absolute;
+    right:16px;
+    top:16px;
+    z-index:10;
+    padding:8px 12px;
+    border-radius:6px;
+    border:1px solid var(--border);
+    background:var(--panel);
+    color:var(--ink);
+    font-size:12px;
+    font-family:inherit;
+    cursor:pointer;
+    box-shadow: 0 2px 6px rgba(22,50,79,0.08);
+  }
+  .global-summary-btn.active{ background:var(--ink); color:#fff; border-color:var(--ink); }
+
+  .global-summary-panel{
+    position:absolute;
+    right:16px;
+    top:58px;
+    z-index:20;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:8px;
+    padding:14px 16px;
+    box-shadow: 0 10px 28px rgba(22,50,79,0.18);
+    max-width:min(92vw, 620px);
+    max-height:70vh;
+    overflow:auto;
+  }
+  .global-summary-panel.hidden{ display:none; }
+  .global-summary-panel h3{
+    margin:0 0 10px;
+    font-size:13px;
+    color:var(--ink);
+  }
+  .gs-table{
+    display:grid;
+    grid-template-columns: 1fr repeat(3, minmax(96px, auto));
+    column-gap:14px;
+    row-gap:6px;
+    font-size:11.5px;
+    white-space:nowrap;
+  }
+  .gs-table .gs-head{
+    font-size:10px;
+    color:var(--ink-soft);
+    text-transform:uppercase;
+    letter-spacing:0.02em;
+    text-align:right;
+  }
+  .gs-table .gs-head:first-child{ text-align:left; }
+  .gs-table .gs-row-label{ color:var(--ink); }
+  .gs-table .gs-row-label.gs-strong{ font-weight:600; }
+  .gs-table .gs-cell{
+    font-family:'IBM Plex Mono', monospace;
+    text-align:right;
+    color:var(--ink);
+  }
+  .gs-table .gs-cell .gs-sub{ color:var(--ink-soft); font-size:10.5px; }
+  .gs-table .gs-divider{
+    grid-column:1 / -1;
+    border-top:1px solid var(--app-bg);
+    margin:2px 0;
+  }
+
   .floor-toggle{
     position:absolute;
     left:50%;
@@ -699,33 +766,46 @@
   .name-filter:focus{ outline:none; border-color:var(--ink-soft); }
   .summary-grid{
     display:grid;
-    grid-template-columns: auto 1fr 1fr;
-    gap:4px 10px;
-    font-size:12.5px;
+    grid-template-columns: 13px 1fr auto auto;
+    column-gap:9px;
+    row-gap:6px;
+    font-size:12px;
+    align-items:center;
   }
-  .summary-grid .row-label{
-    color:var(--ink-soft);
-    grid-column:1;
-    align-self:center;
-  }
-  .summary-head{
-    font-size:10.5px;
+  .summary-grid .sg-head{
+    font-size:10px;
     color:var(--ink-soft);
     text-transform:uppercase;
     letter-spacing:0.02em;
+    text-align:right;
+    white-space:nowrap;
   }
-  .summary-value{
+  .summary-grid .sg-swatch{
+    width:12px; height:12px;
+    border-radius:3px;
+    border:1px solid var(--border);
+  }
+  .summary-grid .sg-label{ color:var(--ink); }
+  .summary-grid .sg-total{ font-weight:600; color:var(--ink); }
+  .summary-grid .sg-count{
     font-family:'IBM Plex Mono', monospace;
     font-weight:600;
     text-align:right;
+    white-space:nowrap;
+    color:var(--ink-soft);
+    font-size:11px;
   }
-  .summary-value.total{ color:var(--ink); }
-  .summary-value.done{ color:#4F8F52; }
-  .summary-value.notdone{ color:#B5502F; }
-  .summary-divider{
+  .summary-grid .sg-area{
+    font-family:'IBM Plex Mono', monospace;
+    font-weight:600;
+    text-align:right;
+    white-space:nowrap;
+    color:var(--ink);
+  }
+  .summary-grid .sg-divider{
     grid-column:1 / -1;
     border-top:1px solid var(--app-bg);
-    margin:2px 0;
+    margin:1px 0 2px;
   }
   .stage-filter{
     display:flex;
@@ -773,6 +853,8 @@
   <div class="plan-pane">
     <svg id="plan" xmlns="http://www.w3.org/2000/svg"></svg>
     <div class="floor-toggle" id="floorToggle"></div>
+    <button class="global-summary-btn" id="globalSummaryBtn">📊 Общая сводка</button>
+    <div class="global-summary-panel hidden" id="globalSummaryPanel"></div>
     <div class="layer-toggle">
       <button id="toggleWalls" class="active">Стены</button>
       <button id="toggleAxis" class="active">Оси</button>
@@ -836,10 +918,6 @@
     <div class="card">
       <h2 id="summaryTitle">Сводка</h2>
       <div class="summary-grid" id="summaryGrid"></div>
-    </div>
-    <div class="card">
-      <h2 id="legendTitle">Готовность по этапам</h2>
-      <div id="legend"></div>
     </div>
     <div class="card">
       <h2>Не привязаны автоматически</h2>
@@ -955,6 +1033,20 @@ async function loadOverrides(){
   (data || []).forEach(row => {
     if (!overrides[row.room_id]) overrides[row.room_id] = {};
     overrides[row.room_id][row.stage_id] = { done: row.done, date: row.date || '' };
+  });
+}
+
+// assignments[roomId][stageId] = 'Название подрядчика' — живое назначение из Supabase,
+// редактируется администратором напрямую через Google-таблицу (в обход приложения)
+let assignments = {};
+
+async function loadAssignments(){
+  const { data, error } = await sb.from('stage_assignments').select('room_id, stage_id, contractor');
+  assignments = {};
+  if (error){ console.error('loadAssignments:', error); return; }
+  (data || []).forEach(row => {
+    if (!assignments[row.room_id]) assignments[row.room_id] = {};
+    assignments[row.room_id][row.stage_id] = row.contractor || '';
   });
 }
 
@@ -1088,15 +1180,18 @@ function todayIso(){
   return d.toISOString().slice(0,10);
 }
 
-// Сводит исходные данные таблицы и ручные правки в единый эффективный список этапов
+// Сводит исходные данные таблицы, ручные правки и живые назначения подрядчика в единый список этапов
 function effectiveStages(room){
   const ov = overrides[room.id] || {};
+  const asg = assignments[room.id] || {};
   return (room.stages || []).map(s => {
+    const liveContractor = asg[s.id];
+    const contractor = liveContractor !== undefined ? liveContractor : s.contractor;
     const o = ov[s.id];
     if (o){
-      return { ...s, done: o.done, date: o.done ? isoToRu(o.date) : '', dateIso: o.date, overridden: true };
+      return { ...s, contractor, done: o.done, date: o.done ? isoToRu(o.date) : '', dateIso: o.date, overridden: true };
     }
-    return { ...s, dateIso: ruToIso(s.date) };
+    return { ...s, contractor, dateIso: ruToIso(s.date) };
   });
 }
 
@@ -1115,33 +1210,6 @@ function roomArea(room){
   return isNaN(v) ? 0 : v;
 }
 
-// Сводка по текущему этажу с учётом активного фильтра по виду работ:
-// делит помещения на "готово" / "не готово" (для конкретного этапа —
-// не готово включает и "не назначен подрядчик", и "назначен, но не сделано").
-function computeSummary(){
-  const rooms = filteredRooms();
-  const totalCount = rooms.length;
-  const totalArea = rooms.reduce((sum, r) => sum + roomArea(r), 0);
-
-  let doneRooms, notDoneRooms;
-  if (currentStageFilter === 'all'){
-    doneRooms = rooms.filter(r => (effectivePercent(r) ?? -1) >= 100);
-    notDoneRooms = rooms.filter(r => { const p = effectivePercent(r); return p != null && p < 100; });
-  } else {
-    doneRooms = rooms.filter(r => stageFilterStatus(r, currentStageFilter) === 'done');
-    notDoneRooms = rooms.filter(r => {
-      const s = stageFilterStatus(r, currentStageFilter);
-      return s === 'pending' || s === 'unassigned';
-    });
-  }
-
-  return {
-    totalCount, totalArea,
-    doneCount: doneRooms.length, doneArea: doneRooms.reduce((s,r)=>s+roomArea(r),0),
-    notDoneCount: notDoneRooms.length, notDoneArea: notDoneRooms.reduce((s,r)=>s+roomArea(r),0),
-  };
-}
-
 function fmtArea(n){
   return n.toLocaleString('ru-RU', { maximumFractionDigits: 1, minimumFractionDigits: 1 });
 }
@@ -1157,27 +1225,133 @@ function filterTitleSuffix(){
 }
 
 function renderSummary(){
-  const el = document.getElementById('summaryGrid');
+  const rooms = filteredRooms();
   const titleEl = document.getElementById('summaryTitle');
-  titleEl.textContent = 'Сводка' + filterTitleSuffix();
+  const el = document.getElementById('summaryGrid');
 
-  const s = computeSummary();
-  el.innerHTML = `
-    <div></div><div class="summary-head">Кол-во</div><div class="summary-head">Площадь</div>
-    <div class="row-label">Всего</div>
-    <div class="summary-value total">${s.totalCount}</div>
-    <div class="summary-value total">${fmtArea(s.totalArea)} м²</div>
-    <div class="summary-divider"></div>
-    <div class="row-label">Готово</div>
-    <div class="summary-value done">${s.doneCount}</div>
-    <div class="summary-value done">${fmtArea(s.doneArea)} м²</div>
-    <div class="row-label">Не готово</div>
-    <div class="summary-value notdone">${s.notDoneCount}</div>
-    <div class="summary-value notdone">${fmtArea(s.notDoneArea)} м²</div>
+  const totalCount = rooms.length;
+  const totalArea = rooms.reduce((sum, r) => sum + roomArea(r), 0);
+
+  let categories; // [{color, label, count, area}]
+
+  if (currentStageFilter === 'all'){
+    titleEl.textContent = 'Сводка' + filterTitleSuffix();
+    categories = PERCENT_BUCKETS.map(bucket => {
+      const matched = rooms.filter(r => bucketOf(effectivePercent(r))?.id === bucket.id);
+      return { color: bucket.color, label: bucket.label, count: matched.length, area: matched.reduce((s,r)=>s+roomArea(r),0) };
+    });
+    const noData = rooms.filter(r => effectivePercent(r) === null);
+    if (noData.length){
+      categories.push({ color: NO_DATA_COLOR, label: 'Нет данных в таблице', count: noData.length, area: noData.reduce((s,r)=>s+roomArea(r),0) });
+    }
+  } else {
+    const stageDef = STAGE_ORDER.find(s => s.id === currentStageFilter);
+    titleEl.textContent = (stageDef ? stageDef.label : 'Вид работ') + (currentNameFilter !== 'all' ? ' · ' + currentNameFilter : '');
+    categories = ['done','pending','unassigned'].map(key => {
+      const matched = rooms.filter(r => stageFilterStatus(r, currentStageFilter) === key);
+      return { color: STAGE_STATUS_COLORS[key].color, label: STAGE_STATUS_COLORS[key].label, count: matched.length, area: matched.reduce((s,r)=>s+roomArea(r),0) };
+    });
+    const na = rooms.filter(r => stageFilterStatus(r, currentStageFilter) === null);
+    if (na.length){
+      categories.push({ color: NO_DATA_COLOR, label: 'Не применимо к этому типу помещения', count: na.length, area: na.reduce((s,r)=>s+roomArea(r),0) });
+    }
+  }
+
+  let html = `
+    <div></div><div></div><div class="sg-head">кол-во</div><div class="sg-head">площадь</div>
+    <div></div><div class="sg-total">Всего</div>
+    <div class="sg-count">${totalCount}</div>
+    <div class="sg-area">${fmtArea(totalArea)} м²</div>
+    <div class="sg-divider"></div>
   `;
+  categories.forEach(c => {
+    html += `
+      <div class="sg-swatch" style="background:${c.color}"></div>
+      <div class="sg-label">${c.label}</div>
+      <div class="sg-count">${c.count}</div>
+      <div class="sg-area">${fmtArea(c.area)} м²</div>
+    `;
+  });
+  el.innerHTML = html;
 }
 
+// ---------- глобальная сводка: по всем этажам сразу, без учёта текущих фильтров ----------
+let globalSummaryOpen = false;
+
+function computeGlobalSummary(){
+  const allFloors = Object.keys(FLOORS_DATA);
+
+  let overallCount = 0, overallArea = 0, overallDone = 0, overallDoneArea = 0;
+  allFloors.forEach(floor => {
+    roomsForFloor(floor).forEach(room => {
+      const area = roomArea(room);
+      overallCount++; overallArea += area;
+      const p = effectivePercent(room);
+      if (p != null && p >= 100){ overallDone++; overallDoneArea += area; }
+    });
+  });
+
+  const stageRows = STAGE_ORDER.map(def => {
+    let total = 0, totalArea = 0, done = 0, doneArea = 0;
+    allFloors.forEach(floor => {
+      roomsForFloor(floor).forEach(room => {
+        const s = effectiveStages(room).find(x => x.id === def.id);
+        if (!s || !s.applicable) return;
+        const area = roomArea(room);
+        total++; totalArea += area;
+        if (s.done){ done++; doneArea += area; }
+      });
+    });
+    return {
+      label: def.label,
+      total, totalArea, done, doneArea,
+      notDone: total - done, notDoneArea: totalArea - doneArea,
+    };
+  });
+
+  return {
+    overall: { total: overallCount, totalArea: overallArea, done: overallDone, doneArea: overallDoneArea,
+               notDone: overallCount - overallDone, notDoneArea: overallArea - overallDoneArea },
+    stages: stageRows,
+  };
+}
+
+function fmtCell(count, area){
+  return `${count}<span class="gs-sub"> · ${fmtArea(area)} м²</span>`;
+}
+
+function renderGlobalSummary(){
+  const panel = document.getElementById('globalSummaryPanel');
+  if (!globalSummaryOpen) { panel.classList.add('hidden'); return; }
+
+  const g = computeGlobalSummary();
+  let html = `<h3>Общая сводка по всем этажам</h3><div class="gs-table">`;
+  html += `<div class="gs-head" style="text-align:left;">Вид работ</div><div class="gs-head">Всего</div><div class="gs-head">Готово</div><div class="gs-head">Не готово</div>`;
+  html += `<div class="gs-row-label gs-strong">Все помещения</div>
+    <div class="gs-cell">${fmtCell(g.overall.total, g.overall.totalArea)}</div>
+    <div class="gs-cell">${fmtCell(g.overall.done, g.overall.doneArea)}</div>
+    <div class="gs-cell">${fmtCell(g.overall.notDone, g.overall.notDoneArea)}</div>
+    <div class="gs-divider"></div>`;
+  g.stages.forEach(s => {
+    html += `<div class="gs-row-label">${s.label}</div>
+      <div class="gs-cell">${fmtCell(s.total, s.totalArea)}</div>
+      <div class="gs-cell">${fmtCell(s.done, s.doneArea)}</div>
+      <div class="gs-cell">${fmtCell(s.notDone, s.notDoneArea)}</div>`;
+  });
+  html += `</div>`;
+  panel.innerHTML = html;
+  panel.classList.remove('hidden');
+}
+
+document.getElementById('globalSummaryBtn').addEventListener('click', () => {
+  globalSummaryOpen = !globalSummaryOpen;
+  document.getElementById('globalSummaryBtn').classList.toggle('active', globalSummaryOpen);
+  renderGlobalSummary();
+});
+
 function toggleStage(roomId, stageId, currentlyDone){
+
+
   if (!overrides[roomId]) overrides[roomId] = {};
   const done = !currentlyDone;
   const date = done ? todayIso() : '';
@@ -1215,7 +1389,6 @@ let manualRooms = {}; // { floor: { roomId: { exterior: [[x,y],...] } } }
 
 const svg = document.getElementById('plan');
 const menu = document.getElementById('menu');
-const legend = document.getElementById('legend');
 const progressFill = document.getElementById('progressFill');
 const progressText = document.getElementById('progressText');
 const unmatchedList = document.getElementById('unmatchedList');
@@ -1365,65 +1538,6 @@ function renderRooms(){
   });
 }
 
-function renderLegend(){
-  legend.innerHTML = '';
-  const rooms = filteredRooms();
-  const legendTitle = document.getElementById('legendTitle');
-
-  if (currentStageFilter === 'all'){
-    legendTitle.textContent = 'Готовность по этапам' + filterTitleSuffix();
-    PERCENT_BUCKETS.forEach(bucket => {
-      const count = rooms.filter(r => bucketOf(effectivePercent(r))?.id === bucket.id).length;
-      const item = document.createElement('div');
-      item.className = 'legend-item';
-      item.innerHTML = `
-        <div class="swatch" style="background:${bucket.color}"></div>
-        <div>${bucket.label}</div>
-        <div class="legend-count">${count}</div>
-      `;
-      legend.appendChild(item);
-    });
-    const noData = rooms.filter(r => effectivePercent(r) === null).length;
-    if (noData){
-      const item = document.createElement('div');
-      item.className = 'legend-item';
-      item.innerHTML = `
-        <div class="swatch" style="background:${NO_DATA_COLOR}"></div>
-        <div>Нет данных в таблице</div>
-        <div class="legend-count">${noData}</div>
-      `;
-      legend.appendChild(item);
-    }
-    return;
-  }
-
-  const stageDef = STAGE_ORDER.find(s => s.id === currentStageFilter);
-  legendTitle.textContent = (stageDef ? stageDef.label : 'Вид работ') + (currentNameFilter !== 'all' ? ' · ' + currentNameFilter : '');
-
-  ['done','pending','unassigned'].forEach(key => {
-    const count = rooms.filter(r => stageFilterStatus(r, currentStageFilter) === key).length;
-    const item = document.createElement('div');
-    item.className = 'legend-item';
-    item.innerHTML = `
-      <div class="swatch" style="background:${STAGE_STATUS_COLORS[key].color}"></div>
-      <div>${STAGE_STATUS_COLORS[key].label}</div>
-      <div class="legend-count">${count}</div>
-    `;
-    legend.appendChild(item);
-  });
-  const na = rooms.filter(r => stageFilterStatus(r, currentStageFilter) === null).length;
-  if (na){
-    const item = document.createElement('div');
-    item.className = 'legend-item';
-    item.innerHTML = `
-      <div class="swatch" style="background:${NO_DATA_COLOR}"></div>
-      <div>Не применимо к этому типу помещения</div>
-      <div class="legend-count">${na}</div>
-    `;
-    legend.appendChild(item);
-  }
-}
-
 function renderProgress(){
   const rooms = filteredRooms();
   const total = rooms.length;
@@ -1464,9 +1578,9 @@ function renderUnmatched(){
 
 function renderAll(){
   renderRooms();
-  renderLegend();
   renderProgress();
   renderSummary();
+  renderGlobalSummary();
 }
 
 function openMenu(room, evt){
@@ -1560,7 +1674,6 @@ menu.addEventListener('click', (e) => {
 
   const room = currentRooms().find(r => r.id === roomId);
   renderRooms();
-  renderLegend();
   renderProgress();
   renderSummary();
   reopenMenuInPlace(room);
@@ -1575,7 +1688,6 @@ menu.addEventListener('change', (e) => {
   setStageDate(roomId, stageId, dateInput.value);
   const room = currentRooms().find(r => r.id === roomId);
   renderRooms();
-  renderLegend();
   renderProgress();
   renderSummary();
   reopenMenuInPlace(room);
@@ -2123,7 +2235,6 @@ function setStageFilter(id){
     btn.classList.toggle('active', btn.dataset.stage === id);
   });
   renderRooms();
-  renderLegend();
   renderProgress();
   renderSummary();
 }
@@ -2170,7 +2281,6 @@ nameFilterEl.addEventListener('change', () => {
   currentNameFilter = nameFilterEl.value;
   highlightId = null;
   renderRooms();
-  renderLegend();
   renderProgress();
   renderSummary();
 });
@@ -2235,6 +2345,7 @@ async function bootApp(){
   renderUnmatched();
   renderAll();
   await loadOverrides();
+  await loadAssignments();
   await loadManualRooms();
   renderUnmatched();
   renderManualList();
@@ -2271,6 +2382,24 @@ function subscribeRealtime(){
         rebuildNameFilterOptions();
         renderAll();
       });
+    })
+    .subscribe();
+
+  sb.channel('stage_assignments_changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'stage_assignments' }, (payload) => {
+      const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
+      if (!row) return;
+      if (payload.eventType === 'DELETE'){
+        if (assignments[row.room_id]) delete assignments[row.room_id][row.stage_id];
+      } else {
+        if (!assignments[row.room_id]) assignments[row.room_id] = {};
+        assignments[row.room_id][row.stage_id] = row.contractor || '';
+      }
+      renderAll();
+      if (menu && !menu.classList.contains('hidden') && menu.dataset.roomId === row.room_id){
+        const room = currentRooms().find(r => r.id === row.room_id);
+        if (room) reopenMenuInPlace(room);
+      }
     })
     .subscribe();
 }

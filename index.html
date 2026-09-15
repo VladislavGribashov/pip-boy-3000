@@ -226,6 +226,25 @@
   }
   .bulk-stage-row button.bsr-done:hover{ background:#4F8F52; color:#fff; border-color:#4F8F52; }
   .bulk-stage-row button.bsr-undone:hover{ background:#B5502F; color:#fff; border-color:#B5502F; }
+  .bsr-contractor-row{ padding-top:0; padding-bottom:9px; }
+  .bsr-contractor-input{
+    flex:1;
+    padding:5px 8px;
+    font-size:11.5px;
+    font-family:inherit;
+    border:1px solid var(--border);
+    border-radius:5px;
+    color:var(--ink);
+    background:var(--panel);
+    min-width:0;
+  }
+  .bsr-contractor-input:focus{ outline:none; border-color:var(--ink-soft); }
+  .bsr-contractor-row .bsr-assign{
+    width:auto;
+    padding:5px 10px;
+    font-size:11px;
+    font-family:inherit;
+  }
   .draw-controls{
     position:absolute;
     right:16px;
@@ -720,6 +739,18 @@
     color:var(--ink-soft);
     font-size:11px;
   }
+  .stage-contractor-input{
+    width:100%;
+    margin-top:3px;
+    padding:3px 6px;
+    font-size:11px;
+    font-family:inherit;
+    border:1px solid var(--border);
+    border-radius:4px;
+    color:var(--ink);
+    background:var(--panel);
+  }
+  .stage-contractor-input:focus{ outline:none; border-color:var(--ink-soft); }
   .stage-hint{
     font-size:10.5px;
     color:var(--ink-soft);
@@ -933,6 +964,7 @@
   </div>
 </div>
 <div class="menu hidden" id="menu"></div>
+<datalist id="contractorDatalist"></datalist>
 <div class="overlay-backdrop hidden" id="overlayBackdrop"></div>
 <div class="assign-panel hidden" id="assignPanel">
   <h3>Привязать помещение</h3>
@@ -1048,6 +1080,47 @@ async function loadAssignments(){
     if (!assignments[row.room_id]) assignments[row.room_id] = {};
     assignments[row.room_id][row.stage_id] = row.contractor || '';
   });
+}
+
+// Только администратор: переопределяет подрядчика для конкретного этапа в конкретном помещении
+async function persistAssignmentRow(roomId, stageId, contractor){
+  showSaveNote('Сохранение…');
+  const { error } = await sb.from('stage_assignments').upsert({
+    room_id: roomId,
+    stage_id: stageId,
+    contractor: contractor || null,
+    updated_at: new Date().toISOString(),
+  });
+  showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
+  if (error) console.error('persistAssignmentRow:', error);
+}
+
+function setStageContractor(roomId, stageId, contractor){
+  if (!currentProfile || !currentProfile.is_admin) return;
+  if (!assignments[roomId]) assignments[roomId] = {};
+  assignments[roomId][stageId] = contractor || '';
+  persistAssignmentRow(roomId, stageId, contractor);
+  rebuildContractorDatalist();
+}
+
+// Собирает список всех встречающихся названий подрядчиков (из исходных данных и живых
+// назначений) для автодополнения в полях редактирования
+function rebuildContractorDatalist(){
+  const dl = document.getElementById('contractorDatalist');
+  if (!dl) return;
+  const names = new Set();
+  Object.keys(TABLE_INDEX).forEach(key => {
+    (TABLE_INDEX[key].stages || []).forEach(s => { if (s.contractor) names.add(s.contractor); });
+  });
+  Object.keys(FLOORS_DATA).forEach(floor => {
+    roomsForFloor(floor).forEach(room => {
+      (room.stages || []).forEach(s => { if (s.contractor) names.add(s.contractor); });
+    });
+  });
+  Object.values(assignments).forEach(byStage => {
+    Object.values(byStage).forEach(c => { if (c) names.add(c); });
+  });
+  dl.innerHTML = [...names].sort().map(n => `<option value="${n}">`).join('');
 }
 
 // Пишет одну отметку сразу в базу (вместо сериализации всего объекта целиком)
@@ -1565,13 +1638,15 @@ function renderUnmatched(){
     const tag = document.createElement('div');
     tag.className = 'unmatched-tag';
     tag.textContent = id;
-    tag.title = 'Нажмите, чтобы обвести это помещение на плане';
-    tag.style.cursor = 'pointer';
-    tag.addEventListener('click', () => {
-      pendingAssignId = id;
-      setDrawingMode(true);
-      document.getElementById('drawStatus').textContent = `Обводите помещение № ${id}`;
-    });
+    if (currentProfile && currentProfile.is_admin){
+      tag.title = 'Нажмите, чтобы обвести это помещение на плане';
+      tag.style.cursor = 'pointer';
+      tag.addEventListener('click', () => {
+        pendingAssignId = id;
+        setDrawingMode(true);
+        document.getElementById('drawStatus').textContent = `Обводите помещение № ${id}`;
+      });
+    }
     unmatchedList.appendChild(tag);
   });
 }
@@ -1618,7 +1693,9 @@ function openMenu(room, evt){
           ${s.done
             ? `<input type="date" class="stage-date" data-stage-date="${s.id}" value="${s.dateIso || ''}" ${editable ? '' : 'disabled'}>`
             : `<div class="stage-hint">${editable ? 'нажмите, чтобы отметить' : 'нет прав на этот этап'}</div>`}
-          ${s.contractor ? `<div class="stage-contractor">${s.contractor}</div>` : ''}
+          ${currentProfile && currentProfile.is_admin
+            ? `<input type="text" class="stage-contractor-input" data-stage-contractor="${s.id}" value="${s.contractor || ''}" list="contractorDatalist" placeholder="подрядчик не назначен">`
+            : (s.contractor ? `<div class="stage-contractor">${s.contractor}</div>` : '')}
         </div>
       </div>`;
     });
@@ -1643,6 +1720,9 @@ function openMenu(room, evt){
 menu.addEventListener('click', (e) => {
   const dateInput = e.target.closest('[data-stage-date]');
   if (dateInput) { e.stopPropagation(); return; } // клик по самому полю даты — не переключаем статус
+
+  const contractorInput = e.target.closest('[data-stage-contractor]');
+  if (contractorInput) { e.stopPropagation(); return; } // клик по полю подрядчика — не переключаем статус
 
   const deleteBtn = e.target.closest('[data-action="delete-manual"]');
   if (deleteBtn){
@@ -1681,16 +1761,30 @@ menu.addEventListener('click', (e) => {
 
 menu.addEventListener('change', (e) => {
   const dateInput = e.target.closest('[data-stage-date]');
-  if (!dateInput) return;
-  if (dateInput.disabled) return;
-  const roomId = menu.dataset.roomId;
-  const stageId = dateInput.dataset.stageDate;
-  setStageDate(roomId, stageId, dateInput.value);
-  const room = currentRooms().find(r => r.id === roomId);
-  renderRooms();
-  renderProgress();
-  renderSummary();
-  reopenMenuInPlace(room);
+  if (dateInput){
+    if (dateInput.disabled) return;
+    const roomId = menu.dataset.roomId;
+    const stageId = dateInput.dataset.stageDate;
+    setStageDate(roomId, stageId, dateInput.value);
+    const room = currentRooms().find(r => r.id === roomId);
+    renderRooms();
+    renderProgress();
+    renderSummary();
+    reopenMenuInPlace(room);
+    return;
+  }
+
+  const contractorInput = e.target.closest('[data-stage-contractor]');
+  if (contractorInput){
+    const roomId = menu.dataset.roomId;
+    const stageId = contractorInput.dataset.stageContractor;
+    setStageContractor(roomId, stageId, contractorInput.value.trim());
+    const room = currentRooms().find(r => r.id === roomId);
+    renderRooms();
+    renderProgress();
+    renderSummary();
+    reopenMenuInPlace(room);
+  }
 });
 
 // Перерисовывает панель на прежнем месте (без пересчёта позиции под курсор)
@@ -1938,23 +2032,60 @@ function updateBulkPanel(){
 
   actionsEl.innerHTML = '';
   STAGE_ORDER.forEach(def => {
-    const editableCount = rooms.filter(r => {
+    const applicableRooms = rooms.filter(r => {
       const s = effectiveStages(r).find(x => x.id === def.id);
-      return s && s.applicable && canEditStage(s);
+      return s && s.applicable;
+    });
+    const editableCount = applicableRooms.filter(r => {
+      const s = effectiveStages(r).find(x => x.id === def.id);
+      return canEditStage(s);
     }).length;
-    if (!editableCount) return; // этап неприменим или недоступен по правам ни для одного из выбранных
-    const row = document.createElement('div');
-    row.className = 'bulk-stage-row';
-    row.innerHTML = `<div class="bsr-label">${def.label} <span style="color:var(--ink-soft);font-size:11px;">(${editableCount})</span></div>
-      <button class="bsr-done" title="Отметить готовым для всех выбранных">✓</button>
-      <button class="bsr-undone" title="Снять отметку для всех выбранных">✕</button>`;
-    row.querySelector('.bsr-done').addEventListener('click', () => bulkSetStage(def.id, true));
-    row.querySelector('.bsr-undone').addEventListener('click', () => bulkSetStage(def.id, false));
-    actionsEl.appendChild(row);
+
+    if (editableCount){
+      const row = document.createElement('div');
+      row.className = 'bulk-stage-row';
+      row.innerHTML = `<div class="bsr-label">${def.label} <span style="color:var(--ink-soft);font-size:11px;">(${editableCount})</span></div>
+        <button class="bsr-done" title="Отметить готовым для всех выбранных">✓</button>
+        <button class="bsr-undone" title="Снять отметку для всех выбранных">✕</button>`;
+      row.querySelector('.bsr-done').addEventListener('click', () => bulkSetStage(def.id, true));
+      row.querySelector('.bsr-undone').addEventListener('click', () => bulkSetStage(def.id, false));
+      actionsEl.appendChild(row);
+    }
+
+    // Переназначение подрядчика группой — доступно только администратору
+    if (currentProfile && currentProfile.is_admin && applicableRooms.length){
+      const crow = document.createElement('div');
+      crow.className = 'bulk-stage-row bsr-contractor-row';
+      crow.innerHTML = `<input type="text" class="bsr-contractor-input" list="contractorDatalist" placeholder="Подрядчик для «${def.label}» (${applicableRooms.length})">
+        <button class="bsr-assign">Назначить</button>`;
+      crow.querySelector('.bsr-assign').addEventListener('click', () => {
+        const val = crow.querySelector('.bsr-contractor-input').value.trim();
+        bulkSetContractor(def.id, val);
+      });
+      actionsEl.appendChild(crow);
+    }
   });
   if (!actionsEl.children.length){
     actionsEl.innerHTML = `<div class="no-data-note">Нет доступных вам этапов среди выбранных помещений.</div>`;
   }
+}
+
+// Только администратор: переназначает подрядчика для конкретного этапа сразу во всех
+// выбранных помещениях, где этот этап применим
+function bulkSetContractor(stageId, contractor){
+  if (!currentProfile || !currentProfile.is_admin) return;
+  selectedIds.forEach(id => {
+    const room = currentRooms().find(r => r.id === id);
+    if (!room) return;
+    const s = effectiveStages(room).find(x => x.id === stageId);
+    if (!s || !s.applicable) return;
+    if (!assignments[id]) assignments[id] = {};
+    assignments[id][stageId] = contractor;
+    persistAssignmentRow(id, stageId, contractor);
+  });
+  rebuildContractorDatalist();
+  renderAll();
+  updateBulkPanel();
 }
 
 
@@ -1994,6 +2125,7 @@ function renderDraft(){
 }
 
 function setDrawingMode(on){
+  if (on && !(currentProfile && currentProfile.is_admin)) return; // только администратор может рисовать контуры
   drawingMode = on;
   document.getElementById('drawModeBtn').classList.toggle('active', on);
   document.getElementById('drawToolbar').classList.toggle('hidden', !on);
@@ -2065,6 +2197,7 @@ document.getElementById('assignCancelBtn').addEventListener('click', () => close
 overlayBackdrop.addEventListener('click', () => closeAssignPanel(true));
 
 document.getElementById('assignSaveBtn').addEventListener('click', () => {
+  if (!(currentProfile && currentProfile.is_admin)) return;
   const id = assignInput.value.trim();
   if (!id) { assignInput.focus(); return; }
   if (!manualRooms[currentFloor]) manualRooms[currentFloor] = {};
@@ -2350,6 +2483,7 @@ async function bootApp(){
   renderUnmatched();
   renderManualList();
   rebuildNameFilterOptions();
+  rebuildContractorDatalist();
   renderAll();
   subscribeRealtime();
 }
@@ -2434,6 +2568,7 @@ async function onSignedIn(session){
   document.getElementById('userEmail').textContent = currentProfile.email;
   document.getElementById('userRole').textContent = roleLabel(currentProfile);
   document.getElementById('noContractorNote').classList.toggle('hidden', !!(currentProfile.is_admin || currentProfile.contractor));
+  document.getElementById('drawModeBtn').style.display = currentProfile.is_admin ? '' : 'none';
 
   document.getElementById('loginScreen').classList.add('hidden');
   document.getElementById('appRoot').classList.remove('hidden');

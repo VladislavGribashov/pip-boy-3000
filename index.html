@@ -1096,7 +1096,7 @@ async function persistAssignmentRow(roomId, stageId, contractor){
 }
 
 function setStageContractor(roomId, stageId, contractor){
-  if (!currentProfile || !currentProfile.is_admin) return;
+  if (!canManageContractors()) return;
   if (!assignments[roomId]) assignments[roomId] = {};
   assignments[roomId][stageId] = contractor || '';
   persistAssignmentRow(roomId, stageId, contractor);
@@ -1193,9 +1193,14 @@ async function deleteManualRoom(roomId){
 // ---------- проверка прав: можно ли редактировать конкретный этап ----------
 function canEditStage(stage){
   if (!currentProfile) return false;
-  if (currentProfile.is_admin) return true;
+  if (currentProfile.is_admin || currentProfile.is_supervisor) return true;
   if (!currentProfile.contractor) return false;
   return !!stage.contractor && stage.contractor === currentProfile.contractor;
+}
+
+// Назначать/переназначать подрядчиков может администратор или "ответственный за подрядчиков"
+function canManageContractors(){
+  return !!(currentProfile && (currentProfile.is_admin || currentProfile.is_supervisor));
 }
 
 function manualRoomsForFloor(floor){
@@ -1693,7 +1698,7 @@ function openMenu(room, evt){
           ${s.done
             ? `<input type="date" class="stage-date" data-stage-date="${s.id}" value="${s.dateIso || ''}" ${editable ? '' : 'disabled'}>`
             : `<div class="stage-hint">${editable ? 'нажмите, чтобы отметить' : 'нет прав на этот этап'}</div>`}
-          ${currentProfile && currentProfile.is_admin
+          ${canManageContractors()
             ? `<input type="text" class="stage-contractor-input" data-stage-contractor="${s.id}" value="${s.contractor || ''}" list="contractorDatalist" placeholder="подрядчик не назначен">`
             : (s.contractor ? `<div class="stage-contractor">${s.contractor}</div>` : '')}
         </div>
@@ -2052,8 +2057,8 @@ function updateBulkPanel(){
       actionsEl.appendChild(row);
     }
 
-    // Переназначение подрядчика группой — доступно только администратору
-    if (currentProfile && currentProfile.is_admin && applicableRooms.length){
+    // Переназначение подрядчика группой — доступно администратору и "ответственному за подрядчиков"
+    if (canManageContractors() && applicableRooms.length){
       const crow = document.createElement('div');
       crow.className = 'bulk-stage-row bsr-contractor-row';
       crow.innerHTML = `<input type="text" class="bsr-contractor-input" list="contractorDatalist" placeholder="Подрядчик для «${def.label}» (${applicableRooms.length})">
@@ -2070,10 +2075,10 @@ function updateBulkPanel(){
   }
 }
 
-// Только администратор: переназначает подрядчика для конкретного этапа сразу во всех
-// выбранных помещениях, где этот этап применим
+// Администратор или "ответственный за подрядчиков": переназначает подрядчика для конкретного
+// этапа сразу во всех выбранных помещениях, где этот этап применим
 function bulkSetContractor(stageId, contractor){
-  if (!currentProfile || !currentProfile.is_admin) return;
+  if (!canManageContractors()) return;
   selectedIds.forEach(id => {
     const room = currentRooms().find(r => r.id === id);
     if (!room) return;
@@ -2547,6 +2552,7 @@ let currentProfile = null; // { id, email, contractor, is_admin }
 
 function roleLabel(profile){
   if (profile.is_admin) return 'администратор';
+  if (profile.is_supervisor) return 'ответственный за подрядчиков';
   return profile.contractor ? profile.contractor : 'подрядчик не назначен';
 }
 
@@ -2563,11 +2569,11 @@ async function fetchProfile(userId, attempt){
 async function onSignedIn(session){
   const user = session.user;
   const profile = await fetchProfile(user.id);
-  currentProfile = profile || { id: user.id, email: user.email, contractor: null, is_admin: false };
+  currentProfile = profile || { id: user.id, email: user.email, contractor: null, is_admin: false, is_supervisor: false };
 
   document.getElementById('userEmail').textContent = currentProfile.email;
   document.getElementById('userRole').textContent = roleLabel(currentProfile);
-  document.getElementById('noContractorNote').classList.toggle('hidden', !!(currentProfile.is_admin || currentProfile.contractor));
+  document.getElementById('noContractorNote').classList.toggle('hidden', !!(currentProfile.is_admin || currentProfile.is_supervisor || currentProfile.contractor));
   document.getElementById('drawModeBtn').style.display = currentProfile.is_admin ? '' : 'none';
 
   document.getElementById('loginScreen').classList.add('hidden');

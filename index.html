@@ -2210,7 +2210,8 @@ const assignDatalist = document.getElementById('assignDatalist');
 
 function currentUnassignedIds(){
   const assigned = new Set(Object.keys(manualRoomsForFloor(currentFloor)));
-  return getFloorData().unmatched.filter(id => !assigned.has(id));
+  const alreadyReal = new Set(getFloorData().rooms.map(r => r.id));
+  return getFloorData().unmatched.filter(id => !assigned.has(id) && !alreadyReal.has(id));
 }
 
 function openAssignPanel(){

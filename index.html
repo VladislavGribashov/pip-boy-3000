@@ -61,6 +61,39 @@
   .login-note.error{ color:#B5502F; }
   .login-note.success{ color:#4F8F52; }
 
+  .login-divider{
+    display:flex;
+    align-items:center;
+    text-align:center;
+    color:#94A3AC;
+    font-size:11px;
+    margin:14px 0 10px;
+  }
+  .login-divider::before, .login-divider::after{
+    content:'';
+    flex:1;
+    border-top:1px solid #E1E5E8;
+  }
+  .login-divider span{ padding:0 10px; }
+  .guest-btn{
+    background:none !important;
+    border:1px solid #CBD3D8 !important;
+    color:#4C6478 !important;
+  }
+  .guest-btn:hover{ border-color:#4C6478 !important; }
+
+  .guest-banner{
+    background:#E7EEF5;
+    border:1px solid #9FBBD9;
+    color:#2C5178;
+    border-radius:6px;
+    padding:9px 10px;
+    font-size:12px;
+    margin-bottom:10px;
+    line-height:1.5;
+  }
+  .guest-banner.hidden{ display:none; }
+
   .user-bar{
     display:flex; align-items:center; justify-content:space-between;
     font-size:11.5px; color:var(--ink-soft);
@@ -913,6 +946,8 @@
     <input type="email" id="loginEmail" placeholder="you@company.com" autocomplete="email">
     <button id="loginSendBtn">Прислать ссылку для входа</button>
     <div class="login-note" id="loginNote"></div>
+    <div class="login-divider"><span>или</span></div>
+    <button id="guestBtn" class="guest-btn">Войти как наблюдатель (только просмотр)</button>
   </div>
 </div>
 
@@ -949,6 +984,10 @@
     <div class="user-bar" id="userBar">
       <span><span class="u-email" id="userEmail"></span> · <span class="u-role" id="userRole"></span></span>
       <button id="signOutBtn">выйти</button>
+    </div>
+    <div class="guest-banner hidden" id="guestBanner">
+      👀 Вы в режиме наблюдателя — только просмотр, без возможности вносить изменения.
+      <button id="guestExitBtn" style="margin-left:6px;border:none;background:none;color:#2C5178;text-decoration:underline;cursor:pointer;font-size:12px;">Войти по почте</button>
     </div>
     <div class="view-as-row hidden" id="viewAsRow">
       <select id="viewAsSelect">
@@ -1779,7 +1818,7 @@ menu.addEventListener('click', (e) => {
     e.stopPropagation();
     const roomId = menu.dataset.roomId;
     const manual = manualRooms[currentFloor] && manualRooms[currentFloor][roomId];
-    const canDelete = currentProfile && (currentProfile.is_admin || (manual && manual.created_by === currentProfile.id));
+    const canDelete = currentProfile && (currentProfile.is_admin || (currentProfile.id && manual && manual.created_by === currentProfile.id));
     if (!canDelete){ alert('Удалить контур может только администратор или тот, кто его добавил.'); return; }
     if (manualRooms[currentFloor]) delete manualRooms[currentFloor][roomId];
     deleteManualRoom(roomId);
@@ -2211,7 +2250,8 @@ const assignDatalist = document.getElementById('assignDatalist');
 function currentUnassignedIds(){
   const assigned = new Set(Object.keys(manualRoomsForFloor(currentFloor)));
   const alreadyReal = new Set(getFloorData().rooms.map(r => r.id));
-  return getFloorData().unmatched.filter(id => !assigned.has(id) && !alreadyReal.has(id));
+  const filtered = getFloorData().unmatched.filter(id => !assigned.has(id) && !alreadyReal.has(id));
+  return [...new Set(filtered)]; // на случай, если один и тот же номер продублирован в самом списке
 }
 
 function openAssignPanel(){
@@ -2272,7 +2312,7 @@ function renderManualList(){
   entries.forEach(id => {
     const info = TABLE_INDEX[canonKey(id)];
     const manual = manualRoomsForFloor(currentFloor)[id];
-    const canDelete = currentProfile && (currentProfile.is_admin || (manual && manual.created_by === currentProfile.id));
+    const canDelete = currentProfile && (currentProfile.is_admin || (currentProfile.id && manual && manual.created_by === currentProfile.id));
     const row = document.createElement('div');
     row.className = 'manual-list-item';
     row.innerHTML = `<span class="mid">${id}</span><span class="mname">${info ? info.name : ''}</span>${canDelete ? '<button title="Удалить привязку">×</button>' : ''}`;
@@ -2705,6 +2745,39 @@ function showLoginScreen(){
   document.getElementById('appRoot').classList.add('hidden');
 }
 
+// ---------- режим "наблюдатель" — без входа, только чтение ----------
+let isGuest = false;
+
+async function enterGuestMode(){
+  isGuest = true;
+  currentProfile = { id: null, email: null, contractor: null, is_admin: false, is_supervisor: false };
+
+  document.getElementById('userBar').classList.add('hidden');
+  document.getElementById('guestBanner').classList.remove('hidden');
+  document.getElementById('noContractorNote').classList.add('hidden');
+  document.getElementById('drawModeBtn').style.display = 'none';
+  document.getElementById('viewAsRow').classList.add('hidden');
+
+  document.getElementById('loginScreen').classList.add('hidden');
+  document.getElementById('appRoot').classList.remove('hidden');
+
+  if (!window.__appBooted){
+    window.__appBooted = true;
+    await bootApp();
+  } else {
+    renderAll();
+  }
+}
+
+function exitGuestMode(){
+  isGuest = false;
+  currentProfile = null;
+  window.__appBooted = false;
+  document.getElementById('guestBanner').classList.add('hidden');
+  document.getElementById('userBar').classList.remove('hidden');
+  showLoginScreen();
+}
+
 async function initAuth(){
   const { data: { session } } = await sb.auth.getSession();
   if (session){
@@ -2750,6 +2823,14 @@ document.getElementById('loginEmail').addEventListener('keydown', (e) => {
 document.getElementById('signOutBtn').addEventListener('click', async () => {
   await sb.auth.signOut();
   location.reload();
+});
+
+document.getElementById('guestBtn').addEventListener('click', () => {
+  enterGuestMode();
+});
+
+document.getElementById('guestExitBtn').addEventListener('click', () => {
+  exitGuestMode();
 });
 
 initAuth();

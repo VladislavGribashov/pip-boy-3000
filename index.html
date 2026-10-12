@@ -820,6 +820,29 @@
     background:var(--panel);
   }
   .stage-contractor-input:focus{ outline:none; border-color:var(--ink-soft); }
+  .stage-comment-input{
+    width:100%;
+    margin-top:5px;
+    padding:5px 7px;
+    font-size:11px;
+    font-family:inherit;
+    border:1px solid var(--border);
+    border-radius:4px;
+    color:var(--ink);
+    background:var(--panel);
+    resize:vertical;
+  }
+  .stage-comment-input:focus{ outline:none; border-color:var(--ink-soft); }
+  .stage-comment-view{
+    margin-top:5px;
+    padding:5px 7px;
+    font-size:11px;
+    color:var(--ink-soft);
+    background:var(--app-bg);
+    border-radius:4px;
+    line-height:1.4;
+    white-space:pre-wrap;
+  }
   .stage-hint{
     font-size:10.5px;
     color:var(--ink-soft);
@@ -1143,12 +1166,12 @@ function showSaveNote(text){
 }
 
 async function loadOverrides(){
-  const { data, error } = await sb.from('stage_overrides').select('room_id, stage_id, done, date');
+  const { data, error } = await sb.from('stage_overrides').select('room_id, stage_id, done, date, comment_text');
   overrides = {};
   if (error){ console.error('loadOverrides:', error); return; }
   (data || []).forEach(row => {
     if (!overrides[row.room_id]) overrides[row.room_id] = {};
-    overrides[row.room_id][row.stage_id] = { done: row.done, date: row.date || '' };
+    overrides[row.room_id][row.stage_id] = { done: row.done, date: row.date || '', comment: row.comment_text || '' };
   });
 }
 
@@ -1185,6 +1208,12 @@ function setStageContractor(roomId, stageId, contractor){
   assignments[roomId][stageId] = contractor || '';
   persistAssignmentRow(roomId, stageId, contractor);
   rebuildContractorDatalist();
+
+  const room = currentRooms().find(r => r.id === roomId);
+  const stageDef = STAGE_ORDER.find(s => s.id === stageId);
+  if (room && stageDef){
+    logToSheet(roomId, room.tableName || room.name, currentFloor, stageDef.label, 'переназначен подрядчик', null, contractor);
+  }
 }
 
 // Собирает список всех встречающихся названий подрядчиков (из исходных данных и живых
@@ -1211,7 +1240,7 @@ function rebuildContractorDatalist(){
 // ---------- автоматический экспорт в собственную Google-таблицу (журнал) ----------
 const SHEET_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbxX5_2u-0Vk5Bq5UmjRMHZs4KsXe4DHSGF4Ox0v5hdDmds-WaRwTNDN4dZ95Wtvexk/exec';
 
-function logToSheet(roomId, roomName, floor, stageLabel, action, dateIso){
+function logToSheet(roomId, roomName, floor, stageLabel, action, dateIso, contractorOverride, commentText){
   if (!currentProfile) return;
   const payload = {
     workDate: dateIso ? isoToRu(dateIso) : '',
@@ -1219,9 +1248,12 @@ function logToSheet(roomId, roomName, floor, stageLabel, action, dateIso){
     roomId: roomId,
     roomName: roomName || '',
     stageLabel: stageLabel,
-    action: action, // 'отмечено' | 'снято'
+    action: action, // 'отмечено' | 'снято' | 'переназначен подрядчик' | 'комментарий обновлён' | ...
     userEmail: currentProfile.email,
-    contractor: currentProfile.is_admin ? 'Админ' : (currentProfile.contractor || ''),
+    contractor: contractorOverride !== undefined
+      ? (contractorOverride || '')
+      : (currentProfile.is_admin ? 'Админ' : (currentProfile.contractor || '')),
+    comment: commentText || '',
   };
   // text/plain — чтобы браузер не слал preflight OPTIONS, который Apps Script не обрабатывает
   fetch(SHEET_WEBHOOK_URL, {
@@ -1244,6 +1276,38 @@ async function persistOverrideRow(roomId, stageId, doneVal, dateVal){
   });
   showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
   if (error) console.error('persistOverrideRow:', error);
+}
+
+// Пишет только комментарий, не трогая готовность/дату той же строки
+// (merge-duplicates обновляет лишь переданные поля, остальные остаются как были)
+async function persistCommentRow(roomId, stageId, comment){
+  showSaveNote('Сохранение…');
+  const { error } = await sb.from('stage_overrides').upsert({
+    room_id: roomId,
+    stage_id: stageId,
+    floor: currentFloor,
+    comment_text: comment || null,
+    updated_by: currentProfile ? currentProfile.id : null,
+    updated_at: new Date().toISOString(),
+  });
+  showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
+  if (error) console.error('persistCommentRow:', error);
+}
+
+// Администратор или "ответственный за подрядчиков": комментарий к конкретному этапу
+function setStageComment(roomId, stageId, comment){
+  if (!canManageContractors()) return;
+  if (!overrides[roomId]) overrides[roomId] = {};
+  if (!overrides[roomId][stageId]) overrides[roomId][stageId] = { done:false, date:'', comment:'' };
+  overrides[roomId][stageId].comment = comment;
+  persistCommentRow(roomId, stageId, comment);
+
+  const room = currentRooms().find(r => r.id === roomId);
+  const stageDef = STAGE_ORDER.find(s => s.id === stageId);
+  if (room && stageDef){
+    logToSheet(roomId, room.tableName || room.name, currentFloor, stageDef.label,
+      comment ? 'комментарий обновлён' : 'комментарий удалён', null, undefined, comment);
+  }
 }
 
 // ---------- вручную привязанные границы помещений ----------
@@ -1351,9 +1415,9 @@ function effectiveStages(room){
     const contractor = liveContractor !== undefined ? liveContractor : s.contractor;
     const o = ov[s.id];
     if (o){
-      return { ...s, contractor, done: o.done, date: o.done ? isoToRu(o.date) : '', dateIso: o.date, overridden: true };
+      return { ...s, contractor, done: o.done, date: o.done ? isoToRu(o.date) : '', dateIso: o.date, comment: o.comment || '', overridden: true };
     }
-    return { ...s, contractor, dateIso: ruToIso(s.date) };
+    return { ...s, contractor, dateIso: ruToIso(s.date), comment: '' };
   });
 }
 
@@ -1775,6 +1839,7 @@ function openMenu(room, evt){
     applicableStages.forEach(s => {
       const editable = canEditStage(s);
       const rowCls = 'stage-row' + (editable ? '' : ' locked');
+      const canComment = canManageContractors();
       html += `<div class="${rowCls}" data-stage-id="${s.id}" data-done="${s.done ? '1':'0'}" data-editable="${editable ? '1':'0'}">
         <div class="stage-dot ${s.done ? 'done' : ''}"></div>
         <div class="stage-body">
@@ -1785,6 +1850,9 @@ function openMenu(room, evt){
           ${canManageContractors()
             ? `<input type="text" class="stage-contractor-input" data-stage-contractor="${s.id}" value="${s.contractor || ''}" list="contractorDatalist" placeholder="подрядчик не назначен">`
             : (s.contractor ? `<div class="stage-contractor">${s.contractor}</div>` : '')}
+          ${canComment
+            ? `<textarea class="stage-comment-input" data-stage-comment="${s.id}" rows="2" maxlength="500" placeholder="Комментарий по этому этапу…">${escapeHtml(s.comment || '')}</textarea>`
+            : (s.comment ? `<div class="stage-comment-view">💬 ${escapeHtml(s.comment)}</div>` : '')}
         </div>
       </div>`;
     });
@@ -1812,6 +1880,9 @@ menu.addEventListener('click', (e) => {
 
   const contractorInput = e.target.closest('[data-stage-contractor]');
   if (contractorInput) { e.stopPropagation(); return; } // клик по полю подрядчика — не переключаем статус
+
+  const commentInput = e.target.closest('[data-stage-comment]');
+  if (commentInput) { e.stopPropagation(); return; } // клик по полю комментария — не переключаем статус
 
   const deleteBtn = e.target.closest('[data-action="delete-manual"]');
   if (deleteBtn){
@@ -1872,6 +1943,16 @@ menu.addEventListener('change', (e) => {
     renderRooms();
     renderProgress();
     renderSummary();
+    reopenMenuInPlace(room);
+    return;
+  }
+
+  const commentInput = e.target.closest('[data-stage-comment]');
+  if (commentInput){
+    const roomId = menu.dataset.roomId;
+    const stageId = commentInput.dataset.stageComment;
+    setStageComment(roomId, stageId, commentInput.value.trim());
+    const room = currentRooms().find(r => r.id === roomId);
     reopenMenuInPlace(room);
   }
 });
@@ -2152,6 +2233,16 @@ function updateBulkPanel(){
         bulkSetContractor(def.id, val);
       });
       actionsEl.appendChild(crow);
+
+      const cmrow = document.createElement('div');
+      cmrow.className = 'bulk-stage-row bsr-contractor-row';
+      cmrow.innerHTML = `<input type="text" class="bsr-contractor-input" placeholder="Комментарий для «${def.label}» (${applicableRooms.length})">
+        <button class="bsr-assign">Сохранить</button>`;
+      cmrow.querySelector('.bsr-assign').addEventListener('click', () => {
+        const val = cmrow.querySelector('input').value.trim();
+        bulkSetComment(def.id, val);
+      });
+      actionsEl.appendChild(cmrow);
     }
   });
   if (!actionsEl.children.length){
@@ -2163,6 +2254,7 @@ function updateBulkPanel(){
 // этапа сразу во всех выбранных помещениях, где этот этап применим
 function bulkSetContractor(stageId, contractor){
   if (!canManageContractors()) return;
+  const stageDef = STAGE_ORDER.find(s => s.id === stageId);
   selectedIds.forEach(id => {
     const room = currentRooms().find(r => r.id === id);
     if (!room) return;
@@ -2171,8 +2263,41 @@ function bulkSetContractor(stageId, contractor){
     if (!assignments[id]) assignments[id] = {};
     assignments[id][stageId] = contractor;
     persistAssignmentRow(id, stageId, contractor);
+    if (stageDef){
+      logToSheet(id, room.tableName || room.name, currentFloor, stageDef.label, 'переназначен подрядчик', null, contractor);
+    }
   });
   rebuildContractorDatalist();
+  renderAll();
+  updateBulkPanel();
+}
+
+// Групповое проставление комментария — перезаписывает существующие комментарии
+// у всех выбранных помещений для этого этапа, поэтому спрашиваем подтверждение
+function bulkSetComment(stageId, comment){
+  if (!canManageContractors()) return;
+  const stageDef = STAGE_ORDER.find(s => s.id === stageId);
+  const targets = [...selectedIds].filter(id => {
+    const room = currentRooms().find(r => r.id === id);
+    if (!room) return false;
+    const s = effectiveStages(room).find(x => x.id === stageId);
+    return s && s.applicable;
+  });
+  if (!targets.length) return;
+  const ok = confirm(`Заменить комментарий у «${stageDef ? stageDef.label : stageId}» сразу в ${targets.length} помещ.? Существующие комментарии в этих помещениях будут перезаписаны.`);
+  if (!ok) return;
+
+  targets.forEach(id => {
+    const room = currentRooms().find(r => r.id === id);
+    if (!overrides[id]) overrides[id] = {};
+    if (!overrides[id][stageId]) overrides[id][stageId] = { done:false, date:'', comment:'' };
+    overrides[id][stageId].comment = comment;
+    persistCommentRow(id, stageId, comment);
+    if (stageDef){
+      logToSheet(id, room.tableName || room.name, currentFloor, stageDef.label,
+        comment ? 'комментарий обновлён' : 'комментарий удалён', null, undefined, comment);
+    }
+  });
   renderAll();
   updateBulkPanel();
 }
@@ -2330,15 +2455,29 @@ function renderManualList(){
   });
 }
 
+// Центрирует найденное помещение и подбирает масштаб так, чтобы оно ЦЕЛИКОМ помещалось в видимую
+// область. Раньше стоял фиксированный масштаб "не меньше 8", но scale у нас — это пиксели на единицу
+// чертежа (на всём этаже около 0.004), поэтому помещение раздувалось в десятки раз больше экрана.
 function focusRoom(found){
   highlightId = found.id;
   renderRooms();
   const xs = found.exterior.map(p=>p[0]), ys = found.exterior.map(p=>p[1]);
-  const cx = (Math.min(...xs)+Math.max(...xs))/2;
-  const cy = (Math.min(...ys)+Math.max(...ys))/2;
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
   const rect = svg.getBoundingClientRect();
-  const targetScale = Math.max(scale, 8);
-  scale = targetScale;
+
+  // Единицы чертежа — миллиметры. Показываем помещение с запасом вокруг (чтобы видеть соседей и
+  // понимать, где оно находится), но не меньше MIN_SPAN: иначе совсем маленькая кладовая
+  // всё равно раздувалась бы на весь экран.
+  const MARGIN = 2.5;       // во сколько раз видимая область больше самого помещения
+  const MIN_SPAN = 10000;   // минимум 10 м видимой области по ширине/высоте
+  const spanW = Math.max((maxX - minX) * MARGIN, MIN_SPAN);
+  const spanH = Math.max((maxY - minY) * MARGIN, MIN_SPAN);
+  const target = Math.min(rect.width / spanW, rect.height / spanH);
+
+  scale = Math.max(minScale, Math.min(maxScale, target));
   tx = rect.width/2 - cx*scale;
   ty = rect.height/2 - cy*scale;
   applyTransform();
@@ -2589,7 +2728,7 @@ function subscribeRealtime(){
         if (overrides[row.room_id]) delete overrides[row.room_id][row.stage_id];
       } else {
         if (!overrides[row.room_id]) overrides[row.room_id] = {};
-        overrides[row.room_id][row.stage_id] = { done: row.done, date: row.date || '' };
+        overrides[row.room_id][row.stage_id] = { done: row.done, date: row.date || '', comment: row.comment_text || '' };
       }
       renderAll();
       if (menu && !menu.classList.contains('hidden') && menu.dataset.roomId === row.room_id){
@@ -2632,9 +2771,29 @@ function subscribeRealtime(){
 // ---------- авторизация по email (magic link) ----------
 const SUPABASE_URL = 'https://eelkyevcplpkxlcyxdlb.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_7odGcXI2FfH93wQKB-5Gtw_80TaaYkx';
+// Если ссылка из письма не сработала, Supabase возвращает на сайт с описанием ошибки прямо в адресе
+// (#error=...&error_code=otp_expired&error_description=...). Раньше приложение это игнорировало и просто
+// показывало форму входа — человек не понимал, что произошло. Запоминаем ошибку ДО создания клиента
+// (иначе он может сам её обработать и стереть) и покажем на экране входа.
+const authRedirectError = (() => {
+  const raw = (location.hash || '').replace(/^#/, '') + '&' + (location.search || '').replace(/^\?/, '');
+  const params = new URLSearchParams(raw);
+  if (params.get('access_token')) return null; // успешный вход — это обработает сам Supabase
+  const description = params.get('error_description') || params.get('error');
+  if (!description) return null;
+  history.replaceState(null, '', location.pathname); // чтобы ошибка не показывалась снова после обновления страницы
+  return { code: params.get('error_code') || '', description };
+})();
+
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let currentProfile = null; // { id, email, contractor, is_admin }
+
+function escapeHtml(str){
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
 
 function roleLabel(profile){
   if (profile.is_admin) return 'администратор';
@@ -2778,12 +2937,24 @@ function exitGuestMode(){
   showLoginScreen();
 }
 
+function showAuthRedirectError(){
+  if (!authRedirectError) return;
+  const noteEl = document.getElementById('loginNote');
+  const d = (authRedirectError.description || '').toLowerCase();
+  const linkProblem = authRedirectError.code === 'otp_expired' || d.includes('expired') || d.includes('invalid');
+  noteEl.textContent = linkProblem
+    ? 'Ссылка из письма недействительна или уже использована. Частая причина — почтовая защита, которая «открывает» ссылки раньше вас. Запросите новую ссылку и откройте её сразу, как придёт письмо.'
+    : 'Не удалось войти по ссылке: ' + authRedirectError.description;
+  noteEl.className = 'login-note error';
+}
+
 async function initAuth(){
   const { data: { session } } = await sb.auth.getSession();
   if (session){
     await onSignedIn(session);
   } else {
     showLoginScreen();
+    showAuthRedirectError();
   }
   sb.auth.onAuthStateChange((event, session) => {
     if (session) onSignedIn(session);

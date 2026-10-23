@@ -107,6 +107,21 @@
     text-decoration:underline;
   }
   .no-contractor-note.hidden{ display:none; }
+  .save-error-toast{
+    position:fixed; left:50%; bottom:24px; transform:translateX(-50%);
+    z-index:300; width:min(92vw, 460px);
+    background:#FBEAE6; border:1px solid #D9826B; border-radius:8px;
+    padding:12px 14px; color:#6F2A17;
+    box-shadow:0 10px 28px rgba(111,42,23,0.25);
+    font-size:12.5px; line-height:1.45;
+  }
+  .save-error-toast.hidden{ display:none; }
+  .save-error-toast .set-title{ font-weight:600; margin-bottom:4px; }
+  .save-error-toast .set-detail{ margin-top:6px; font-size:11px; opacity:0.75; word-break:break-word; }
+  .save-error-toast button{
+    margin-top:8px; border:1px solid #B5502F; background:none; color:#8A2F18;
+    border-radius:5px; padding:4px 10px; cursor:pointer; font-family:inherit; font-size:11.5px;
+  }
   .view-as-row{ margin-bottom:10px; }
   .view-as-row.hidden{ display:none; }
   .view-as-row select{
@@ -1070,6 +1085,12 @@
     <div class="save-note" id="saveNote"></div>
   </div>
 </div>
+<div class="save-error-toast hidden" id="saveErrorToast" role="alert">
+  <div class="set-title"></div>
+  <div class="set-body"></div>
+  <div class="set-detail"></div>
+  <button type="button" id="saveErrorClose">Понятно</button>
+</div>
 <div class="menu hidden" id="menu"></div>
 <datalist id="contractorDatalist"></datalist>
 <div class="overlay-backdrop hidden" id="overlayBackdrop"></div>
@@ -1165,14 +1186,105 @@ function showSaveNote(text){
   saveTimer = setTimeout(() => { saveNote.textContent = ''; }, 1500);
 }
 
+// ---------- сбой записи в базу: показать явно, вернуть экран к базе, зафиксировать в журнале ----------
+// Раньше при ошибке записи оставалась только мелкая надпись на 1.5 секунды в самом низу длинного
+// сайдбара, на экране отметка продолжала выглядеть сохранённой, а журнал принимал запись отдельным
+// запросом. Получалось «в журнале есть, в приложении нет». Теперь сбой виден сразу.
+let saveFailures = [];
+let saveFailureTimer = null;
+
+function handleSaveFailure(kind, roomId, stageId, error){
+  saveFailures.push({ kind, roomId, stageId, error });
+  clearTimeout(saveFailureTimer);
+  saveFailureTimer = setTimeout(processSaveFailures, 700); // массовое действие даёт десятки сбоев — собираем в одно сообщение
+}
+
+function describeSaveError(error){
+  const s = (((error && error.message) || '') + ' ' + ((error && error.code) || '') + ' ' + ((error && error.status) || '')).toLowerCase();
+  if (s.includes('failed to fetch') || s.includes('networkerror') || s.includes('network request failed'))
+    return 'Похоже, пропала связь с базой — проверьте интернет и VPN.';
+  if (s.includes('jwt') || s.includes('row-level security') || s.includes('42501') || s.includes('401') || s.includes('403') || s.includes('permission'))
+    return 'Похоже, сессия устарела — нажмите «выйти» и войдите по почте заново.';
+  return '';
+}
+
+async function processSaveFailures(){
+  const batch = saveFailures;
+  saveFailures = [];
+  if (!batch.length) return;
+  const first = batch[0];
+  const errText = (first.error && (first.error.message || first.error.code)) || 'неизвестная ошибка';
+
+  // 1) возвращаем экран к тому, что реально лежит в базе
+  let resynced = true;
+  try {
+    const results = await Promise.all([loadOverrides(), loadAssignments(), loadManualRooms()]);
+    resynced = results.every(Boolean);
+  } catch (e){ resynced = false; }
+  renderUnmatched();
+  renderManualList();
+  rebuildNameFilterOptions();
+  renderAll();
+  if (menu && !menu.classList.contains('hidden') && menu.dataset.roomId){
+    const openRoom = currentRooms().find(r => r.id === menu.dataset.roomId);
+    if (openRoom) reopenMenuInPlace(openRoom);
+  }
+
+  // 2) фиксируем сам факт сбоя в журнале
+  const room = first.roomId ? currentRooms().find(r => r.id === first.roomId) : null;
+  const stageDef = STAGE_ORDER.find(s => s.id === first.stageId);
+  logToSheet(first.roomId || '', room ? (room.tableName || room.name) : '', currentFloor,
+    stageDef ? stageDef.label : '', 'ОШИБКА: не записано в базу (' + first.kind + ')', null, undefined,
+    (batch.length > 1 ? 'Всего не сохранено: ' + batch.length + '. ' : '') + errText);
+
+  // 3) предупреждение на экране — остаётся, пока человек его не закроет
+  showSaveErrorToast(batch.length, resynced, describeSaveError(first.error), errText);
+}
+
+function showSaveErrorToast(count, resynced, hint, detail){
+  const el = document.getElementById('saveErrorToast');
+  if (!el) return;
+  el.querySelector('.set-title').textContent = count > 1 ? 'Не сохранилось изменений: ' + count : 'Изменение не сохранилось';
+  el.querySelector('.set-body').textContent =
+    (resynced
+      ? 'В базу эти данные не записаны. Экран приведён в соответствие с базой — повторите отметку.'
+      : 'В базу эти данные не записаны, а обновить экран не удалось — перезагрузите страницу и повторите.')
+    + (hint ? ' ' + hint : '');
+  el.querySelector('.set-detail').textContent = 'Техническая причина: ' + detail;
+  el.classList.remove('hidden');
+}
+
+// Supabase молча отдаёт не больше 1000 строк за один запрос — без всякой ошибки. Если строк в таблице
+// больше, «лишние» (обычно самые свежие отметки) просто не доходят до приложения. Поэтому читаем
+// постранично, пока строки не кончатся. order() по первичному ключу нужен, чтобы страницы не
+// пересекались и не теряли строки.
+async function fetchAllPages(table, columns, orderCols){
+  const PAGE = 1000;
+  let all = [];
+  let from = 0;
+  while (true){
+    let q = sb.from(table).select(columns);
+    orderCols.forEach(col => { q = q.order(col); });
+    const { data, error } = await q.range(from, from + PAGE - 1);
+    if (error) return { data: null, error };
+    if (!data || !data.length) break;
+    all = all.concat(data);
+    from += data.length; // именно длина полученного, а не PAGE: если сервер отдал меньше, строки не пропустятся
+  }
+  return { data: all, error: null };
+}
+
+// Возвращает true/false. При ошибке чтения прежнее состояние НЕ стирается (раньше оно обнулялось).
 async function loadOverrides(){
-  const { data, error } = await sb.from('stage_overrides').select('room_id, stage_id, done, date, comment_text');
-  overrides = {};
-  if (error){ console.error('loadOverrides:', error); return; }
-  (data || []).forEach(row => {
-    if (!overrides[row.room_id]) overrides[row.room_id] = {};
-    overrides[row.room_id][row.stage_id] = { done: row.done, date: row.date || '', comment: row.comment_text || '' };
+  const { data, error } = await fetchAllPages('stage_overrides', 'room_id, stage_id, done, date, comment_text', ['room_id', 'stage_id']);
+  if (error){ console.error('loadOverrides:', error); return false; }
+  const next = {};
+  data.forEach(row => {
+    if (!next[row.room_id]) next[row.room_id] = {};
+    next[row.room_id][row.stage_id] = { done: row.done, date: row.date || '', comment: row.comment_text || '' };
   });
+  overrides = next;
+  return true;
 }
 
 // assignments[roomId][stageId] = 'Название подрядчика' — живое назначение из Supabase,
@@ -1180,13 +1292,15 @@ async function loadOverrides(){
 let assignments = {};
 
 async function loadAssignments(){
-  const { data, error } = await sb.from('stage_assignments').select('room_id, stage_id, contractor');
-  assignments = {};
-  if (error){ console.error('loadAssignments:', error); return; }
-  (data || []).forEach(row => {
-    if (!assignments[row.room_id]) assignments[row.room_id] = {};
-    assignments[row.room_id][row.stage_id] = row.contractor || '';
+  const { data, error } = await fetchAllPages('stage_assignments', 'room_id, stage_id, contractor', ['room_id', 'stage_id']);
+  if (error){ console.error('loadAssignments:', error); return false; }
+  const next = {};
+  data.forEach(row => {
+    if (!next[row.room_id]) next[row.room_id] = {};
+    next[row.room_id][row.stage_id] = row.contractor || '';
   });
+  assignments = next;
+  return true;
 }
 
 // Только администратор: переопределяет подрядчика для конкретного этапа в конкретном помещении
@@ -1199,7 +1313,7 @@ async function persistAssignmentRow(roomId, stageId, contractor){
     updated_at: new Date().toISOString(),
   });
   showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
-  if (error) console.error('persistAssignmentRow:', error);
+  if (error){ console.error('persistAssignmentRow:', error); handleSaveFailure('подрядчик', roomId, stageId, error); }
 }
 
 function setStageContractor(roomId, stageId, contractor){
@@ -1275,7 +1389,7 @@ async function persistOverrideRow(roomId, stageId, doneVal, dateVal){
     updated_at: new Date().toISOString(),
   });
   showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
-  if (error) console.error('persistOverrideRow:', error);
+  if (error){ console.error('persistOverrideRow:', error); handleSaveFailure('отметка этапа', roomId, stageId, error); }
 }
 
 // Пишет только комментарий, не трогая готовность/дату той же строки
@@ -1291,7 +1405,7 @@ async function persistCommentRow(roomId, stageId, comment){
     updated_at: new Date().toISOString(),
   });
   showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
-  if (error) console.error('persistCommentRow:', error);
+  if (error){ console.error('persistCommentRow:', error); handleSaveFailure('комментарий', roomId, stageId, error); }
 }
 
 // Администратор или "ответственный за подрядчиков": комментарий к конкретному этапу
@@ -1312,13 +1426,15 @@ function setStageComment(roomId, stageId, comment){
 
 // ---------- вручную привязанные границы помещений ----------
 async function loadManualRooms(){
-  const { data, error } = await sb.from('manual_rooms').select('room_id, floor, exterior, created_by');
-  manualRooms = {};
-  if (error){ console.error('loadManualRooms:', error); return; }
-  (data || []).forEach(row => {
-    if (!manualRooms[row.floor]) manualRooms[row.floor] = {};
-    manualRooms[row.floor][row.room_id] = { exterior: row.exterior, created_by: row.created_by };
+  const { data, error } = await fetchAllPages('manual_rooms', 'room_id, floor, exterior, created_by', ['room_id']);
+  if (error){ console.error('loadManualRooms:', error); return false; }
+  const next = {};
+  data.forEach(row => {
+    if (!next[row.floor]) next[row.floor] = {};
+    next[row.floor][row.room_id] = { exterior: row.exterior, created_by: row.created_by };
   });
+  manualRooms = next;
+  return true;
 }
 
 async function persistManualRoom(roomId, floor, exterior){
@@ -1328,14 +1444,14 @@ async function persistManualRoom(roomId, floor, exterior){
     created_by: currentProfile ? currentProfile.id : null,
   });
   showSaveNote(error ? 'Не удалось сохранить' : 'Сохранено');
-  if (error) console.error('persistManualRoom:', error);
+  if (error){ console.error('persistManualRoom:', error); handleSaveFailure('контур помещения', roomId, null, error); }
 }
 
 async function deleteManualRoom(roomId){
   showSaveNote('Удаление…');
   const { error } = await sb.from('manual_rooms').delete().eq('room_id', roomId);
   showSaveNote(error ? 'Не удалось удалить' : 'Удалено');
-  if (error) console.error('deleteManualRoom:', error);
+  if (error){ console.error('deleteManualRoom:', error); handleSaveFailure('удаление контура', roomId, null, error); }
 }
 
 // ---------- проверка прав: можно ли редактировать конкретный этап ----------
@@ -2989,6 +3105,10 @@ document.getElementById('loginSendBtn').addEventListener('click', async () => {
 
 document.getElementById('loginEmail').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('loginSendBtn').click();
+});
+
+document.getElementById('saveErrorClose').addEventListener('click', () => {
+  document.getElementById('saveErrorToast').classList.add('hidden');
 });
 
 document.getElementById('signOutBtn').addEventListener('click', async () => {

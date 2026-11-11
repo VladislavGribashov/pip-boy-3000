@@ -1043,7 +1043,7 @@
     <header>
       <h1>Учёт выполненных работ</h1>
       <p>Все захватки, этаж <span id="floorLabel">−3</span>. Цвет и данные — из таблицы работ. Клик по помещению — подробности.</p>
-      <div class="build-stamp" id="buildStamp">сборка 23.10.2026-B</div>
+      <div class="build-stamp" id="buildStamp">сборка 11.11.2026-A</div>
     </header>
     <div class="search-suggestions">
       <div class="search">
@@ -1131,15 +1131,19 @@ const PERCENT_BUCKETS = [
 ];
 const NO_DATA_COLOR = '#EDEBE4';
 
+// Виды работ, которые отслеживаются в приложении. Это единственное место, где они перечислены:
+//  - чтобы УБРАТЬ вид работ — удалите его строку (он пропадёт из фильтров, карточек, сводок и расчёта готовности);
+//  - чтобы ВЕРНУТЬ — добавьте строку обратно: все отметки по нему остаются в базе и снова появятся;
+//  - чтобы ПЕРЕИМЕНОВАТЬ — поменяйте label (id не трогайте, по нему данные связаны с базой).
+// Убраны: 'waterproof' (Гидроизоляция полов), 'plaster' (Штукатурка стен).
 const STAGE_ORDER = [
-  { id: 'waterproof', label: 'Гидроизоляция полов' },
   { id: 'screed',     label: 'Заливка стяжки' },
   { id: 'floor',      label: 'Напольное покрытие' },
   { id: 'ceiling',    label: 'Покраска потолка' },
-  { id: 'plaster',    label: 'Штукатурка стен' },
-  { id: 'paint_wall', label: 'Покраска стен' },
+  { id: 'paint_wall', label: 'Финишная отделка стен' }, // раньше «Покраска стен»
   { id: 'door',       label: 'Монтаж двери' },
 ];
+const STAGE_BY_ID = Object.fromEntries(STAGE_ORDER.map(s => [s.id, s]));
 
 const STAGE_STATUS_COLORS = {
   done:      { color: '#4F8F52', label: 'Готово' },
@@ -1358,11 +1362,11 @@ function rebuildContractorDatalist(){
   if (!dl) return;
   const names = new Set();
   Object.keys(TABLE_INDEX).forEach(key => {
-    (TABLE_INDEX[key].stages || []).forEach(s => { if (s.contractor) names.add(s.contractor); });
+    (TABLE_INDEX[key].stages || []).forEach(s => { if (STAGE_BY_ID[s.id] && s.contractor) names.add(s.contractor); });
   });
   Object.keys(FLOORS_DATA).forEach(floor => {
     roomsForFloor(floor).forEach(room => {
-      (room.stages || []).forEach(s => { if (s.contractor) names.add(s.contractor); });
+      (room.stages || []).forEach(s => { if (STAGE_BY_ID[s.id] && s.contractor) names.add(s.contractor); });
     });
   });
   Object.values(assignments).forEach(byStage => {
@@ -1547,14 +1551,15 @@ function todayIso(){
 function effectiveStages(room){
   const ov = overrides[room.id] || {};
   const asg = assignments[room.id] || {};
-  return (room.stages || []).map(s => {
+  return (room.stages || []).filter(s => STAGE_BY_ID[s.id]).map(s => {
+    const label = STAGE_BY_ID[s.id].label; // название берём из STAGE_ORDER, а не из исходных данных
     const liveContractor = asg[s.id];
     const contractor = liveContractor !== undefined ? liveContractor : s.contractor;
     const o = ov[s.id];
     if (o){
-      return { ...s, contractor, done: o.done, date: o.done ? isoToRu(o.date) : '', dateIso: o.date, comment: o.comment || '', overridden: true };
+      return { ...s, label, contractor, done: o.done, date: o.done ? isoToRu(o.date) : '', dateIso: o.date, comment: o.comment || '', overridden: true };
     }
-    return { ...s, contractor, dateIso: ruToIso(s.date), comment: '' };
+    return { ...s, label, contractor, dateIso: ruToIso(s.date), comment: '' };
   });
 }
 
@@ -1970,7 +1975,7 @@ function openMenu(room, evt){
     html += `<div class="no-data-note">Нет данных в таблице работ для этого помещения — но можно завести отметки вручную ниже.</div>`;
   }
   if (!applicableStages.length && room.stages && room.stages.length){
-    html += `<div class="no-data-note">Для этого типа помещения не заведены этапы работ в таблице.</div>`;
+    html += `<div class="no-data-note">Для этого помещения нет отслеживаемых видов работ.</div>`;
   } else if (applicableStages.length) {
     html += `<div class="stage-list">`;
     applicableStages.forEach(s => {
